@@ -2,6 +2,12 @@
 
 """
 Cyclopts dataclasses for Stable-Baselines3 training with Schola (PPO, SAC, checkpoints, resume).
+
+PATCHED COPY: adds `features_extractor_class` / `features_extractor_kwargs` to
+`Sb3NetworkArchitectureSettings` so a custom SB3 features extractor (e.g. a
+custom CNN) can be selected from YAML. Replaces
+Plugins/Schola/Resources/python/schola/scripts/sb3/train/settings.py.
+Pair with the patched train.py in this same folder.
 """
 
 from __future__ import annotations
@@ -330,10 +336,21 @@ class Sb3NetworkArchitectureSettings:
     activation: ActivationFunctionEnum = ActivationFunctionEnum.ReLU
     "Activation function to use in the policy and critic networks. This determines the non-linear activation function applied to each layer of the neural networks. The choice of activation function can affect the performance of the model and may depend on the specific characteristics of the environment."
 
+    features_extractor_class: Optional[str] = None
+    "Dotted import path (e.g. 'my_project.extractors.MyCombinedExtractor') to a custom SB3 `BaseFeaturesExtractor` subclass. Only applies when the observation space is a `gym.spaces.Dict`. The module must be importable (on PYTHONPATH) when the `schola` CLI process starts. If left unset, SB3's default `CombinedExtractor` is used (NatureCNN for image-like keys, Flatten for the rest)."
+
+    features_extractor_kwargs: Optional[Dict[str, Any]] = None
+    "Keyword arguments forwarded to `features_extractor_class`. Merged on top of Schola's default `{'normalized_image': True}` (values here take precedence). Ignored if `features_extractor_class` is unset and the observation space isn't a Dict."
+
     def __post_init__(self):
         if self.activation not in list(ActivationFunctionEnum):
             raise ValueError(
                 f"activation must be one of {list(ActivationFunctionEnum)} (got '{self.activation}')."
+            )
+        if self.features_extractor_class is not None and "." not in self.features_extractor_class:
+            raise ValueError(
+                "features_extractor_class must be a dotted import path "
+                f"'module.submodule.ClassName' (got '{self.features_extractor_class}')."
             )
 
 

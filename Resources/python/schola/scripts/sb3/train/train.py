@@ -2,11 +2,18 @@
 
 """
 Script to train a Stable Baselines3 model using Schola.
+
+PATCHED COPY: resolves `network_architecture_settings.features_extractor_class`
+(a dotted import path) into `policy_kwargs["features_extractor_class"]` so a
+custom SB3 features extractor can be selected from YAML. Replaces
+Plugins/Schola/Resources/python/schola/scripts/sb3/train/train.py.
+Pair with the patched settings.py in this same folder.
 """
 
 from dataclasses import asdict
 import os
 import logging
+import signal
 from typing import (
     Any,
     Dict,
@@ -77,6 +84,39 @@ def warn_if_small_image_observation(observation_space, threshold: int = 64):
             break
 
 
+def _resolve_features_extractor_class(dotted_path: str):
+    """
+    Import and return the class referenced by `dotted_path` (e.g.
+    'my_project.extractors.MyCombinedExtractor').
+
+    Parameters
+    ----------
+    dotted_path : str
+        Fully qualified dotted path to a class implementing SB3's
+        `BaseFeaturesExtractor` interface. The containing module must be
+        importable (on PYTHONPATH) when this runs.
+
+    Returns
+    -------
+    type
+        The resolved class object.
+    """
+    import importlib
+
+    module_path, _, class_name = dotted_path.rpartition(".")
+    if not module_path:
+        raise ValueError(
+            f"features_extractor_class must be a dotted path 'module.ClassName' (got '{dotted_path}')."
+        )
+    module = importlib.import_module(module_path)
+    try:
+        return getattr(module, class_name)
+    except AttributeError as e:
+        raise ImportError(
+            f"Module '{module_path}' has no attribute '{class_name}' (from features_extractor_class='{dotted_path}')."
+        ) from e
+
+
 def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
     """
     Main function for training a Stable Baselines3 model using Schola.
@@ -140,6 +180,19 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
             sim_args = args.environment_settings.simulator_settings
             protocol_args = args.environment_settings.protocol_settings
             n_sim = sim_args.num_simulators
+            if (
+                n_sim > 1
+                and not isinstance(sim_args, ExternalSimulatorConfig)
+                and getattr(sim_args, "per_process_saved_root", None) is None
+            ):
+                logger.warning(
+                    "num_simulators=%d but per_process_saved_root is unset: parallel "
+                    "standalones default to the same staged Saved/ tree (logs, locks). "
+                    "Set environment.simulator.(project|executable).per_process_saved_root "
+                    "to a directory; Schola adds sim_0 .. sim_%d there via -userdir=.",
+                    n_sim,
+                    n_sim - 1,
+                )
 
             if n_sim == 1:
                 env = VecEnv(
@@ -189,12 +242,31 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
                         e,
                     )
 
+            # When resuming, SB3 restores optimizer / PPO fields from the checkpoint. Without this,
+            # YAML `algorithm` blocks (e.g. learning_rate, target_kl) are silently ignored — the
+            # most visible symptom is train/learning_rate staying at the old zip value (often 3e-4).
+            if model_loaded:
+                algo = args.algorithm_settings
+                if hasattr(model, "learning_rate"):
+                    model.learning_rate = algo.learning_rate  # type: ignore[union-attr]
+                    if hasattr(model, "_setup_lr_schedule"):
+                        model._setup_lr_schedule()  # type: ignore[attr-defined]
+                if hasattr(model, "target_kl"):
+                    model.target_kl = getattr(algo, "target_kl", None)  # type: ignore[union-attr]
+                logger.info(
+                    "Resumed model: applied YAML learning_rate=%s and target_kl=%s from algorithm settings.",
+                    getattr(algo, "learning_rate", None),
+                    getattr(algo, "target_kl", None),
+                )
+
             if not model_loaded:
                 policy_kwargs: Optional[dict[str, Any]] = None
+                net_arch_settings = args.network_architecture_settings
                 if (
-                    args.network_architecture_settings.activation
-                    or args.network_architecture_settings.critic_parameters
-                    or args.network_architecture_settings.policy_parameters
+                    net_arch_settings.activation
+                    or net_arch_settings.critic_parameters
+                    or net_arch_settings.policy_parameters
+                    or net_arch_settings.features_extractor_class
                 ):
                     if isinstance(env.observation_space, gym.spaces.Dict):
                         policy_kwargs = dict(
@@ -203,27 +275,50 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
                     else:
                         policy_kwargs = dict()
 
-                    if args.network_architecture_settings.activation:
+                    if net_arch_settings.features_extractor_class:
+                        if not isinstance(env.observation_space, gym.spaces.Dict):
+                            logger.warning(
+                                "network_architecture_settings.features_extractor_class is set "
+                                "but the observation space isn't a Dict; ignoring it (SB3's "
+                                "MlpPolicy doesn't take a features_extractor_class override here)."
+                            )
+                        else:
+                            policy_kwargs["features_extractor_class"] = (
+                                _resolve_features_extractor_class(
+                                    net_arch_settings.features_extractor_class
+                                )
+                            )
+                            if net_arch_settings.features_extractor_kwargs:
+                                policy_kwargs["features_extractor_kwargs"].update(
+                                    net_arch_settings.features_extractor_kwargs
+                                )
+                            logger.info(
+                                "Using custom features_extractor_class=%s with kwargs=%s",
+                                net_arch_settings.features_extractor_class,
+                                policy_kwargs["features_extractor_kwargs"],
+                            )
+
+                    if net_arch_settings.activation:
                         policy_kwargs["activation_fn"] = get_activation_function(
-                            args.network_architecture_settings.activation
+                            net_arch_settings.activation
                         )
 
                     if (
-                        args.network_architecture_settings.critic_parameters
-                        or args.network_architecture_settings.policy_parameters
+                        net_arch_settings.critic_parameters
+                        or net_arch_settings.policy_parameters
                     ):
                         # default to nothing
                         policy_kwargs["net_arch"] = dict(vf=[], pi=[], qf=[])
 
-                    if args.network_architecture_settings.critic_parameters:
+                    if net_arch_settings.critic_parameters:
                         policy_kwargs["net_arch"][
                             args.algorithm_settings.critic_type
-                        ] = args.network_architecture_settings.critic_parameters
+                        ] = net_arch_settings.critic_parameters
 
-                    if args.network_architecture_settings.policy_parameters:
+                    if net_arch_settings.policy_parameters:
                         policy_kwargs["net_arch"][
                             "pi"
-                        ] = args.network_architecture_settings.policy_parameters
+                        ] = net_arch_settings.policy_parameters
 
                 model = args.algorithm_settings.constructor(
                     policy=(
@@ -308,6 +403,11 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
                 pbar_callback = CustomProgressBarCallback()
                 callbacks.append(pbar_callback)
 
+            env_options = getattr(args.environment_settings, "env_options", None)
+            if env_options:
+                # Inherited from SB3's `set_options`
+                env.set_options(options=env_options)
+
             model.learn(
                 total_timesteps=args.training_settings.timesteps,
                 callback=callbacks,
@@ -367,10 +467,13 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
             else:
                 logger.info("Evaluation disabled. Skipping.")
                 env.close()
-    except Exception as e:
-        if env:
+    except (KeyboardInterrupt, Exception) as e:
+        if isinstance(e, KeyboardInterrupt):
+            logger.info("Ctrl-C received. Shutting down gracefully;")
+            signal.signal(signal.SIGINT, signal.SIG_IGN)  # Protect cleanup phase
+        if env is not None:
             env.close()
-        raise e
+        raise
 
 
 app = App(name="train", help="Train a model using StableBaselines3")
