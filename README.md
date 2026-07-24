@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> This repository is a detached fork of the original Schola repository, containing project-specific modifications. It was forked from version `2.1.1` of the original repository: https://github.com/GPUOpen-LibrariesAndSDKs/Schola.
+> 
+> Credit for the original implementation belongs to the AMD Schola team.
+
 # Schola
 The Schola project is an effort to build a toolkit/plugin for controlling Objects in Unreal with Reinforcement Learning. It provides tools to help the user create Environments, define Agents, connect to python based RL Frameworks (e.g. Gym, RLlib or Stable Baselines 3), and power NPCs with RL during games.
 
