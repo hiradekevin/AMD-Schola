@@ -1,0 +1,15 @@
+# Example Schola launcher configuration snippet showing UE5 offscreen rendering.
+# This field is optional; omit it or set it to false to preserve the current behavior.
+environment:
+  simulator:
+    executable:
+      executable_path: C:/path/to/MyGame.exe
+      render_offscreen: true
+
+# The same flag is available for project-backed launches:
+# environment:
+#   simulator:
+#     project:
+#       uproject_path: C:/path/to/MyGame.uproject
+#       render_offscreen: true
+

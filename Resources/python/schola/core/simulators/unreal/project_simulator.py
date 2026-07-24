@@ -18,7 +18,6 @@ from schola.core.utils.ubt import (
     get_ue_version,
     get_ubt_path,
     get_unreal_platform,
-    build_executable,
 )
 
 
@@ -125,6 +124,8 @@ class UnrealProject(UnrealExecutable):
         Use a fixed fps while running
     disable_script : bool, default=True
         Whether to disable the autolaunch script setting in the Unreal Engine Schola Plugin
+    render_offscreen : bool, default=False
+        Whether to enable Unreal Engine's ``-RenderOffscreen`` launch flag.
     extra_executable_args : Optional[List[str]]
         Additional arguments to pass to the command line when launching the executable.
 
@@ -151,6 +152,7 @@ class UnrealProject(UnrealExecutable):
         display_logs: bool = True,
         set_fps: Optional[int] = None,
         disable_script: bool = True,
+        render_offscreen: bool = False,
         extra_executable_args: Optional[List[str]] = None,
         extra_ubt_args: Optional[Dict[str, Any]] = None,
     ):
@@ -226,6 +228,7 @@ class UnrealProject(UnrealExecutable):
             display_logs=display_logs,
             set_fps=set_fps,
             disable_script=disable_script,
+            render_offscreen=render_offscreen,
             extra_args=extra_executable_args,
         )
 

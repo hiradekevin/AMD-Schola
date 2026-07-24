@@ -36,6 +36,8 @@ class UnrealExecutable(BaseUnrealSimulator):
         Use a fixed fps while running, if None, no fixed timestep is used
     disable_script : bool, default=False
         Whether to disable the autolaunch script setting in the Unreal Engine Schola Plugin
+    render_offscreen : bool, default=False
+        Whether to enable Unreal Engine's ``-RenderOffscreen`` launch flag.
 
     Attributes
     ----------
@@ -51,6 +53,8 @@ class UnrealExecutable(BaseUnrealSimulator):
         The process running the Unreal Engine. None if the process is not running
     disable_script : bool
         Whether to disable the autolaunch script setting in the Unreal Engine Schola Plugin
+    render_offscreen : bool
+        Whether Unreal Engine will be launched with ``-RenderOffscreen``.
     map : str, optional
         The map to load.  Defaults to the default map in the Unreal Engine project
     """
@@ -63,6 +67,7 @@ class UnrealExecutable(BaseUnrealSimulator):
         display_logs: bool = True,
         set_fps: Optional[int] = None,
         disable_script: bool = True,
+        render_offscreen: bool = False,
         extra_args: Optional[List[str]] = None,
         validate_path: bool = True,
     ):
@@ -81,6 +86,7 @@ class UnrealExecutable(BaseUnrealSimulator):
         self.set_fps = set_fps
         self.env_process = None
         self.disable_script = disable_script
+        self.render_offscreen = render_offscreen
         # Note any maps we want to use here need to be added to the build via Project Settings>Packaging>Advanced> List of Maps...
         # or on the command line with the -Map flag for UnrealAutomationTool
         self.map = map
@@ -105,6 +111,7 @@ class UnrealExecutable(BaseUnrealSimulator):
             display_logs=self.display_logs,
             set_fps=self.set_fps,
             disable_script=self.disable_script,
+            render_offscreen=self.render_offscreen,
             extra_args=self.extra_args.copy() if self.extra_args else None,
             validate_path=False,
         )
@@ -125,6 +132,7 @@ class UnrealExecutable(BaseUnrealSimulator):
             "display_logs": self.display_logs,
             "set_fps": self.set_fps,
             "disable_script": self.disable_script,
+            "render_offscreen": self.render_offscreen,
             "extra_args": self.extra_args.copy() if self.extra_args else None,
             "validate_path": False,
         }
@@ -167,6 +175,8 @@ class UnrealExecutable(BaseUnrealSimulator):
             args += [self.map]
         if self.display_logs:
             args += ["-LOG"]
+        if self.render_offscreen:
+            args += ["-RenderOffscreen"]
         if self.set_fps is not None:
             args += ["-BENCHMARK"]
             args += ["-FPS=" + str(self.set_fps)]

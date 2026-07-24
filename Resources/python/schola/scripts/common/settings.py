@@ -83,6 +83,9 @@ class UnrealExecutableSimulatorConfig:
     disable_script: bool = True
     "Flag indicating if the autolaunch script setting in the Unreal Engine Schola Plugin should be disabled. Useful for testing."
 
+    render_offscreen: bool = False
+    "Flag indicating if Unreal Engine should launch with the ``-RenderOffscreen`` option."
+
     headless: Annotated[bool, Parameter(alias="-h")] = False
     "Flag indicating if the standalone Unreal Engine process should run in headless mode"
 
@@ -118,6 +121,7 @@ class UnrealExecutableSimulatorConfig:
             self.display_logs,
             self.fps,
             self.disable_script,
+            self.render_offscreen,
         )
 
 
@@ -143,6 +147,9 @@ class UnrealProjectSimulatorConfig:
 
     disable_script: bool = True
     "Flag indicating if the autolaunch script setting in the Unreal Engine Schola Plugin should be disabled. Useful for testing."
+
+    render_offscreen: bool = False
+    "Flag indicating if Unreal Engine should launch with the ``-RenderOffscreen`` option."
 
     headless: Annotated[bool, Parameter(alias="-h")] = False
     "Flag indicating if the standalone Unreal Engine process should run in headless mode"
@@ -182,6 +189,7 @@ class UnrealProjectSimulatorConfig:
             display_logs=self.display_logs,
             set_fps=self.fps,
             disable_script=self.disable_script,
+            render_offscreen=self.render_offscreen,
         )
 
 

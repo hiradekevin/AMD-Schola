@@ -141,3 +141,7 @@ coverage_html_report/*
 
 # Build artifacts from python
 Resources/python/build/**
+.venv/
+
+# IDE
+.idea/

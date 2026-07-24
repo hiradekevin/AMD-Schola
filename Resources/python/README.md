@@ -44,6 +44,22 @@ Test and docs dependencies are declared under `[dependency-groups]` in `pyprojec
 
 All C++ dependencies for using Schola are bundled with the plugin under `/Source/ThirdParty` and do not need to be installed separately. These consist of `gRPC`, `protobuf` and `absl`(dependency of gRPC).
 
+### Unreal Engine 5 `RenderOffscreen`
+
+Schola can now launch Unreal Engine with the `-RenderOffscreen` flag for offscreen rendering workflows.
+
+Enable it in Python by passing `render_offscreen=True` to `UnrealExecutable` or `UnrealProject`, or in YAML by setting the simulator option to `true`:
+
+```yaml
+environment:
+  simulator:
+    executable:
+      executable_path: C:/path/to/MyGame.exe
+      render_offscreen: true
+```
+
+An example file is available at `Resources/python/render_offscreen_example.yaml`.
+
 ## Build and Test
 
 >[!IMPORTANT]
