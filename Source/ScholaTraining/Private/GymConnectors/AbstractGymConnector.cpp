@@ -290,7 +290,7 @@ void UAbstractGymConnector::Step(FTrainingState& OutTrainingState, FInitialState
 			if (!StateUpdate)
 			{
 				// TODO figure out what to do here. Maybe close the connector?
-				UE_LOGFMT(LogScholaTraining, Warning, "UAbstractGymConnector::Step(): No State Update resolved. Skipping this step.");
+				UE_LOGFMT(LogScholaTraining, VeryVerbose, "UAbstractGymConnector::Step(): No State Update resolved. Skipping this step.");
 			}
 			else if (StateUpdate->IsStep())
 			{

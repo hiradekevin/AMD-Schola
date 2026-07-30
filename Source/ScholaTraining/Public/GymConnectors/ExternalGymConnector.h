@@ -26,6 +26,9 @@ public:
 	/** Flag to track if this is the first step after connection/reconnection. */
 	bool bFirstStep = true;
 
+	/** Pending future for non-blocking state update resolution. */
+	TFuture<FTrainingStateUpdate*> PendingUpdateFuture;
+
 	/**
 	 * @brief Default constructor for external gym connectors.
 	 */
@@ -41,9 +44,9 @@ public:
 		PURE_VIRTUAL(UExternalGymConnector::RequestBatchedDecision, return TFuture<FTrainingStateUpdate*>(););
 
 	/**
-	 * @brief Resolve the environment state update, blocking if necessary.
-	 * @return Pointer to the resolved training state update.
-	 * @details Waits for the async request to complete and returns the result.
+	 * @brief Resolve the environment state update via non-blocking polling.
+	 * @return Pointer to the resolved training state update, or nullptr if not ready.
+	 * @details Polls the pending future with zero timeout. Returns immediately.
 	 */
 	FTrainingStateUpdate* ResolveEnvironmentStateUpdate() override;
 

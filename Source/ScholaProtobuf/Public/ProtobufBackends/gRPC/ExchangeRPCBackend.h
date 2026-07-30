@@ -252,20 +252,23 @@ template <class ServiceType, typename RequestType, typename ResponseType>
 class TExchangeRPCBackend : public TRPCBackend<ServiceType, RequestType, ResponseType>, public IExchangeBackend<RequestType, ResponseType>
 {
 private:
-	int																 LocalID = 0;
+	int LocalID = 0;
 	using CallData = TExchangeCallData<ServiceType, RequestType, ResponseType>;
-	// Note these are inverted since we are sending response, before the request arrives from gRPC perspective
-	CallData*											   CurrExchange = nullptr;
+	CallData* ActiveCallData = nullptr;
 	ExchangeRPCWorker<ServiceType, RequestType, ResponseType>* Worker;
-	int														   MsgID = 0;
+	int MsgID = 0;
 	using gRPCBackend = TRPCBackend<ServiceType, RequestType, ResponseType>;
 
+	void AutoPreRegisterNext()
+	{
+		CallData* NextCallData = new CallData(this->Service.get(), this->_CQueue.get(), this->TargetRPC);
+		NextCallData->Id = MsgID++;
+		NextCallData->Create();
+		UE_LOGFMT(LogScholaCommunicator, VeryVerbose, "TExchangeRPCBackend::AutoPreRegisterNext(): Exchange {0}: Started Exchange {1}", LocalID, NextCallData->Id);
+		ActiveCallData = NextCallData;
+	}
+
 public:
-	/**
-	 * @param[in] TargetRPC Service method used for exchange RPCs.
-	 * @param[in] Service gRPC service instance.
-	 * @param[in] CQueue Completion queue shared with the server.
-	 */
 	TExchangeRPCBackend(gRPCBackend::AsyncRPCHandle TargetRPC, std::shared_ptr<ServiceType> Service, std::unique_ptr<ServerCompletionQueue> CQueue)
 		: gRPCBackend(TargetRPC, Service, std::move(CQueue))
 	{
@@ -283,33 +286,26 @@ public:
 	TFuture<const RequestType*> Receive() override
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE_STR("ScholaProtobuf: ExchangeRPCBackend Receive");
-		int TempId = MsgID++;
-		// New CallData goes on a pending queue see: https://github.com/grpc/grpc/blob/v1.47.4/src/core/lib/surface/server.cc#L413
-		checkf(CurrExchange == nullptr, TEXT("Existing Exchange needs to be completed before a new exchange can be started"));
-		CallData* CallDataPtr = new CallData(this->Service.get(), this->_CQueue.get(), this->TargetRPC);
-		CurrExchange = CallDataPtr;
-		CallDataPtr->Id = TempId;
-		CallDataPtr->Create();
-		UE_LOGFMT(LogScholaCommunicator, VeryVerbose, "TExchangeRPCBackend::Receive(): Exchange {0}: Started Exchange {1}", LocalID, CurrExchange->Id);
-
-		return CurrExchange->GetRequestFuture();
+		if (ActiveCallData == nullptr)
+		{
+			AutoPreRegisterNext();
+		}
+		UE_LOGFMT(LogScholaCommunicator, VeryVerbose, "TExchangeRPCBackend::Receive(): Exchange {0}: Returning Exchange {1}", LocalID, ActiveCallData->Id);
+		return ActiveCallData->GetRequestFuture();
 	}
 
 	void Respond(ResponseType* Response) override
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE_STR("Schola: ExchangeRPCBackend Respond");
-		assert(Service.Get() != nullptr);
-		assert(CQueue.Get() != nullptr);
-		checkf(CurrExchange != nullptr, TEXT("No Existing Exchange to Complete."));
-		UE_LOGFMT(LogScholaCommunicator, VeryVerbose, "TExchangeRPCBackend::Respond(): Exchange {0}: Completed Exchange {1}", LocalID, CurrExchange->Id);
-		CurrExchange->SetResponse(Response);
-		CurrExchange->Submit();
-		CurrExchange = nullptr;
+		checkf(ActiveCallData != nullptr, TEXT("No Existing Exchange to Complete."));
+		UE_LOGFMT(LogScholaCommunicator, VeryVerbose, "TExchangeRPCBackend::Respond(): Exchange {0}: Completed Exchange {1}", LocalID, ActiveCallData->Id);
+		ActiveCallData->SetResponse(Response);
+		ActiveCallData->Submit();
+		AutoPreRegisterNext();
 	}
 
 	virtual void Initialize() {};
 
-	/** Starts the exchange completion-queue worker thread. */
 	virtual void Start()
 	{
 		Worker->Start();
@@ -320,20 +316,19 @@ public:
 	virtual void Shutdown() override
 	{
 		this->Worker->Stop();
-		this->CurrExchange = nullptr;
+		this->ActiveCallData = nullptr;
 	};
 
 	virtual void Restart() {};
 
 	virtual void Reset() override
 	{
-		// Clean up any stale exchange state from previous connection
-		if (CurrExchange != nullptr)
+		if (ActiveCallData != nullptr)
 		{
 			UE_LOGFMT(LogScholaCommunicator, Verbose, "TExchangeRPCBackend::Reset(): Exchange {0}: Completing stale exchange on reset", LocalID);
-			// Properly complete the pending exchange to avoid orphaning the CallData
-			// This prevents the assertion failure when a new exchange is started
-			Respond(new ResponseType());
+			ActiveCallData->SetResponse(new ResponseType());
+			ActiveCallData->Submit();
+			ActiveCallData = nullptr;
 		}
 	}
 };

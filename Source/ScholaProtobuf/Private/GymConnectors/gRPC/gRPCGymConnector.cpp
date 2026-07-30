@@ -70,6 +70,7 @@ void URPCGymConnector::Init(const FTrainingDefinition& AgentDefns)
 		UE_LOGFMT(LogScholaProtobuf, Verbose, "URPCGymConnector::Init(): Responding with Empty State Message after connector closed.");
 		//Cleanup any carry-over messages, if they still exist.
 		this->DecisionRequestService->Reset();
+		this->PendingUpdateFuture = TFuture<FTrainingStateUpdate*>();
 		// Re-publish the training definition for the next connection
 		this->AgentDefinitionService->Publish(this->TrainingDefinition);
 	});
