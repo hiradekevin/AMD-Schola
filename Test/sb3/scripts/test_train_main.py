@@ -7,6 +7,7 @@ import builtins
 import logging
 from dataclasses import replace
 from pathlib import Path
+from typing import Tuple
 from unittest.mock import MagicMock, patch
 
 import gymnasium as gym
@@ -30,6 +31,7 @@ from schola.scripts.sb3.train.train import (
     main,
     warn_if_small_image_observation,
 )
+from schola.scripts.sb3.utils import RewardCallback
 
 
 @pytest.fixture
@@ -54,6 +56,8 @@ def _train_args(
     timesteps: int = 8,
     disable_eval: bool = True,
     enable_tensorboard: bool = False,
+    enable_csv_logging: bool = False,
+    info_log_keys: Tuple[str, ...] | None = None,
     enable_checkpoints: bool = False,
     save_final_policy: bool = False,
     export_onnx: bool = False,
@@ -84,7 +88,9 @@ def _train_args(
     logging_settings = replace(
         Sb3LoggingSettings(),
         enable_tensorboard=enable_tensorboard,
+        enable_csv_logging=enable_csv_logging,
         log_dir=log_dir,
+        info_log_keys=info_log_keys,
     )
 
     return Sb3TrainScriptSettings(
@@ -297,6 +303,53 @@ def test_main_enable_checkpoints_passes_callback(mock_ppo, mock_vec_cls, tmp_pat
     kwargs = mock_model.learn.call_args.kwargs
     cbs = kwargs.get("callback") or []
     assert any(isinstance(c, CheckpointCallback) for c in cbs)
+
+
+@patch("schola.sb3.env.VecEnv")
+@patch("stable_baselines3.PPO")
+def test_main_enable_csv_logging_includes_reward_callback(mock_ppo, mock_vec_cls, tmp_path):
+    """CSV logging includes RewardCallback even without TensorBoard."""
+    mock_env = MagicMock()
+    mock_env.num_envs = 1
+    mock_env.observation_space = gym.spaces.Box(-1.0, 1.0, (4,), dtype=np.float32)
+    mock_env.action_space = gym.spaces.Discrete(2)
+    mock_vec_cls.return_value = mock_env
+    mock_model = MagicMock()
+    mock_model.get_vec_normalize_env.return_value = None
+    mock_ppo.load.side_effect = Exception("x")
+    mock_ppo.return_value = mock_model
+
+    args = _train_args(tmp_path, timesteps=2, enable_csv_logging=True)
+    main(args)
+
+    kwargs = mock_model.learn.call_args.kwargs
+    cbs = kwargs.get("callback") or []
+    assert any(isinstance(c, RewardCallback) for c in cbs)
+
+
+@patch("schola.sb3.env.VecEnv")
+@patch("stable_baselines3.PPO")
+def test_main_csv_logging_with_info_keys_passes_them_to_callback(mock_ppo, mock_vec_cls, tmp_path):
+    """Info keys from settings are forwarded to RewardCallback."""
+    mock_env = MagicMock()
+    mock_env.num_envs = 1
+    mock_env.observation_space = gym.spaces.Box(-1.0, 1.0, (4,), dtype=np.float32)
+    mock_env.action_space = gym.spaces.Discrete(2)
+    mock_vec_cls.return_value = mock_env
+    mock_model = MagicMock()
+    mock_model.get_vec_normalize_env.return_value = None
+    mock_ppo.load.side_effect = Exception("x")
+    mock_ppo.return_value = mock_model
+
+    info_keys = ("health", "distance_to_goal")
+    args = _train_args(tmp_path, timesteps=2, enable_csv_logging=True, info_log_keys=info_keys)
+    main(args)
+
+    kwargs = mock_model.learn.call_args.kwargs
+    cbs = kwargs.get("callback") or []
+    reward_cb = next((c for c in cbs if isinstance(c, RewardCallback)), None)
+    assert reward_cb is not None
+    assert reward_cb.info_keys == info_keys
 
 
 @patch("schola.sb3.env.VecEnv")

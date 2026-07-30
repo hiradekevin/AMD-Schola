@@ -378,14 +378,24 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
                 args.algorithm_settings.name,
                 args.resume_settings.reset_timestep,
             )
+
+            # Append CSV output when file logging is enabled (independent of tensorboard)
+            if args.logging_settings.enable_csv_logging:
+                from stable_baselines3.common.logger import CSVOutputFormat
+                # Ensure directory exists (__post_init__ may not have run with CLI-set values)
+                args.logging_settings.log_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = args.logging_settings.log_dir / f"{args.algorithm_settings.name.lower()}.csv"
+                sb3_logger.output_formats.append(CSVOutputFormat(str(csv_path)))
+
             sb3_logger.output_formats += output_formats
             model.set_logger(sb3_logger)
 
-            if args.logging_settings.enable_tensorboard:
+            if args.logging_settings.enable_tensorboard or args.logging_settings.enable_csv_logging:
                 reward_callback = RewardCallback(
                     verbose=args.logging_settings.callback_verbosity,
                     frequency=args.logging_settings.log_freq,
                     num_envs=env.num_envs,
+                    info_keys=args.logging_settings.info_log_keys,
                 )
                 callbacks.append(reward_callback)
 
