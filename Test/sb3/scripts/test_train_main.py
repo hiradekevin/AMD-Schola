@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import builtins
 import logging
+import sys
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 from cyclopts import App
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.logger import CSVOutputFormat, HumanOutputFormat
 
 from schola.scripts.common.settings import EnvironmentSettings, GrpcProtocolConfig
 from schola.scripts.sb3.train.settings import (
@@ -347,6 +349,54 @@ def test_main_csv_logging_auto_captures_all_info_keys(mock_ppo, mock_vec_cls, tm
     assert reward_cb is not None
     # Callbacks auto-track all keys; no key list was provided
     assert reward_cb.callbacks[0].info_values == {}
+
+
+@patch("schola.sb3.env.VecEnv")
+@patch("stable_baselines3.PPO")
+def test_main_widens_stdout_truncation_for_long_info_keys(
+    mock_ppo, mock_vec_cls, tmp_path
+):
+    """Long auto-captured info keys don't collide in stdout: max_length is widened."""
+    mock_env = _mock_vec_env()
+    mock_vec_cls.return_value = mock_env
+    mock_model = MagicMock()
+    mock_model.get_vec_normalize_env.return_value = None
+    mock_ppo.load.side_effect = Exception("x")
+    mock_ppo.return_value = mock_model
+
+    args = _train_args(tmp_path, timesteps=2, enable_csv_logging=True)
+    main(args)
+
+    sb3_logger = mock_model.set_logger.call_args.args[0]
+    stdout_formats = [
+        fmt
+        for fmt in sb3_logger.output_formats
+        if isinstance(fmt, HumanOutputFormat) and fmt.file is sys.stdout
+    ]
+    assert len(stdout_formats) == 1
+    assert stdout_formats[0].max_length > 36
+
+
+@patch("schola.sb3.env.VecEnv")
+@patch("stable_baselines3.PPO")
+def test_main_closes_logger_and_releases_csv_file(mock_ppo, mock_vec_cls, tmp_path):
+    """Training closes the SB3 logger, flushing and releasing the CSV file."""
+    mock_env = _mock_vec_env()
+    mock_vec_cls.return_value = mock_env
+    mock_model = MagicMock()
+    mock_model.get_vec_normalize_env.return_value = None
+    mock_ppo.load.side_effect = Exception("x")
+    mock_ppo.return_value = mock_model
+
+    args = _train_args(tmp_path, timesteps=2, enable_csv_logging=True)
+    main(args)
+
+    sb3_logger = mock_model.set_logger.call_args.args[0]
+    csv_formats = [
+        fmt for fmt in sb3_logger.output_formats if isinstance(fmt, CSVOutputFormat)
+    ]
+    assert len(csv_formats) == 1
+    assert csv_formats[0].file.closed
 
 
 def test_single_env_reward_callback_captures_all_info_keys():
