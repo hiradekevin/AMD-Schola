@@ -156,37 +156,6 @@ class BaseVecEnv(Sb3VecEnv):
         initial_obs: Dict[int, Dict[str, Any]],
         initial_infos: Dict[int, Dict[str, str]],
     ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, List[Dict[str, str]]]:
-        """
-        Convert a protocol step payload into SB3 ``step_wait`` return values.
-
-        Parameters
-        ----------
-        observations : list of dict
-            Per-environment, per-agent observations after the step.
-        rewards : list of dict
-            Per-environment, per-agent rewards.
-        terminateds : list of dict
-            Per-environment, per-agent episode termination flags.
-        truncateds : list of dict
-            Per-environment, per-agent truncation flags.
-        nested_infos : list of dict
-            Per-environment, per-agent info dicts.
-        initial_obs : dict
-            Auto-reset initial observations keyed by environment id.
-        initial_infos : dict
-            Auto-reset info dicts keyed by environment id.
-
-        Returns
-        -------
-        Tuple[Dict[str, numpy.ndarray], numpy.ndarray, numpy.ndarray, list of dict]
-            ``(stacked_obs, rewards, dones, infos)`` where ``dones`` combines
-            termination and truncation per flattened agent index.
-
-        Raises
-        ------
-        EnvironmentException
-            If agents in one Unreal environment finish on different timesteps.
-        """
         array_dones = np.empty((self.id_manager.num_ids,), dtype=np.bool_)
         array_rewards = np.asarray(self.id_manager.flatten_list_of_dicts(rewards))
         array_observations = self.id_manager.flatten_list_of_dicts(observations)
@@ -224,6 +193,61 @@ class BaseVecEnv(Sb3VecEnv):
                 infos[uid]["terminal_observation"] = observations[env_id][agent_id]
                 infos[uid]["TimeLimit.truncated"] = (
                     truncateds[env_id][agent_id] and not terminateds[env_id][agent_id]
+                )
+                array_observations[uid] = initial_obs[env_id][agent_id]
+
+        return (
+            _stack_obs(array_observations, self.observation_space),
+            array_rewards,
+            array_dones,
+            infos,
+        )
+
+    def _process_step_wait_flat(
+        self,
+        observations_flat: List[Any],
+        rewards_flat: List[float],
+        terminateds_flat: List[bool],
+        truncateds_flat: List[bool],
+        infos_flat: List[Dict[str, str]],
+        initial_obs: Dict[int, Dict[str, Any]],
+        initial_infos: Dict[int, Dict[str, str]],
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, List[Dict[str, str]]]:
+        """
+        Flat-array variant of _process_step_wait that skips the flatten_list_of_dicts step.
+        """
+        num_ids = self.id_manager.num_ids
+        array_dones = np.empty(num_ids, dtype=np.bool_)
+        array_rewards = np.asarray(rewards_flat)
+        array_observations = list(observations_flat)
+
+        infos = [info if info else {} for info in infos_flat]
+
+        for env_id, agent_id_list in enumerate(self.id_manager.ids):
+            any_done = False
+            all_done = True
+            for agent_id in agent_id_list:
+                uid = self.id_manager[env_id, agent_id]
+                array_dones[uid] = terminateds_flat[uid] or truncateds_flat[uid]
+                any_done = any_done or array_dones[uid]
+                all_done = all_done and array_dones[uid]
+            if any_done and not all_done:
+                raise EnvironmentException(
+                    f"SB3 with multi-agent environments does not support agents completing at different steps. "
+                    f"Env {env_id} had agents in different completion states."
+                )
+
+        for env_id in initial_infos:
+            for agent_id in initial_infos[env_id]:
+                uid = self.id_manager[env_id, agent_id]
+                self.reset_infos[uid] = initial_infos[env_id][agent_id]
+
+        for env_id in initial_obs:
+            for agent_id in self.id_manager.partial_get(env_id):
+                uid = self.id_manager[env_id, agent_id]
+                infos[uid]["terminal_observation"] = observations_flat[uid]
+                infos[uid]["TimeLimit.truncated"] = (
+                    truncateds_flat[uid] and not terminateds_flat[uid]
                 )
                 array_observations[uid] = initial_obs[env_id][agent_id]
 
@@ -355,49 +379,45 @@ class VecEnv(BaseVecEnv):
     def step_async(self, actions: np.ndarray) -> None:
         """
         Buffer flattened actions for the next :meth:`step_wait` call.
-
-        Parameters
-        ----------
-        actions : numpy.ndarray
-            SB3-flattened actions reshaped into nested env/agent dicts; dict action
-            spaces are split with :func:`~schola.sb3.utils.split_value`.
-
-        Returns
-        -------
-        None
-            Sets :attr:`next_actions` in place.
+        Stores a reference to the flat actions array and pre-splits Dict actions.
         """
-        self.next_actions = self.id_manager.nest_list_to_dict_of_dicts(actions)
+        self._flat_actions = actions
+        self._split_actions = None
         if isinstance(self.action_space, gym.spaces.Dict):
-            for env_id, agent_id_list in enumerate(self.id_manager.ids):
-                for agent_id in agent_id_list:
-                    self.next_actions[env_id][agent_id] = split_value(
-                        self.next_actions[env_id][agent_id], self.action_space
-                    )
+            self._split_actions = [
+                split_value(actions[i], self.action_space)
+                for i in range(self.id_manager.num_ids)
+            ]
 
     def step_wait(
         self,
     ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, List[Dict[str, str]]]:
         assert (
-            self.next_actions is not None
+            hasattr(self, "_flat_actions") and self._flat_actions is not None
         ), "step_async must be called before step_wait"
+        if hasattr(self.protocol, 'send_action_msg_flat'):
+            actions = self._split_actions if self._split_actions is not None else self._flat_actions
+            (
+                observations, rewards, terminateds, truncateds, infos, initial_obs, initial_infos,
+            ) = self.protocol.send_action_msg_flat(
+                actions, self.action_space, self.id_manager
+            )
+            return self._process_step_wait_flat(
+                observations, rewards, terminateds, truncateds, infos, initial_obs, initial_infos,
+            )
+
+        next_actions = self.id_manager.nest_list_to_dict_of_dicts(self._flat_actions)
+        if isinstance(self.action_space, gym.spaces.Dict):
+            for env_id, agent_id_list in enumerate(self.id_manager.ids):
+                for agent_id in agent_id_list:
+                    next_actions[env_id][agent_id] = split_value(
+                        next_actions[env_id][agent_id], self.action_space
+                    )
         (
-            observations,
-            rewards,
-            terminateds,
-            truncateds,
-            nested_infos,
-            initial_obs,
-            initial_infos,
+            observations, rewards, terminateds, truncateds, nested_infos, initial_obs, initial_infos,
         ) = self.protocol.send_action_msg(
-            self.next_actions, defaultdict(lambda: self.action_space)
+            next_actions, defaultdict(lambda: self.action_space),
         )
         return self._process_step_wait(
-            observations,
-            rewards,
-            terminateds,
-            truncateds,
-            nested_infos,
-            initial_obs,
-            initial_infos,
+            observations, rewards, terminateds, truncateds, nested_infos, initial_obs, initial_infos,
         )

@@ -61,6 +61,48 @@ def dtype_from_proto(msg: proto_dtype.DType) -> np.dtype:
     return PROTO_DTYPE_TO_NUMPY_DTYPE_MAPPING[msg]
 
 
+_FROM_PROTO_CACHE: dict = {}
+
+
+def _get_from_proto_handler(msg_type: type):
+    handler = _FROM_PROTO_CACHE.get(msg_type)
+    if handler is None:
+        handler = from_proto.dispatch(msg_type)
+        _FROM_PROTO_CACHE[msg_type] = handler
+    return handler
+
+
+def _flatten_training_state(msg, id_manager):  # noqa: F811
+    """
+    Deserialize TrainingState into flat lists using IdManager, bypassing per-env dicts.
+    Returns (obs_flat, rew_flat, term_flat, trunc_flat, info_flat).
+    """
+    n = id_manager.num_ids
+    obs = [None] * n
+    rew = [0.0] * n
+    term = [False] * n
+    trunc = [False] * n
+    info = [{} for _ in range(n)]
+
+    agent_handler = _get_from_proto_handler(state.AgentState)
+    id_map = id_manager.id_map
+
+    for env_id, env_state in enumerate(msg.environment_states):
+        env_map = id_map[env_id]
+        for agent_id, agent_state in env_state.agent_states.items():
+            flat_idx = env_map.get(agent_id)
+            if flat_idx is None:
+                continue
+            o, r, te, tr, i = agent_handler(agent_state)
+            obs[flat_idx] = o
+            rew[flat_idx] = r
+            term[flat_idx] = te
+            trunc[flat_idx] = tr
+            info[flat_idx] = i
+
+    return obs, rew, term, trunc, info
+
+
 @singledispatch
 def from_proto(msg) -> Any:
     """

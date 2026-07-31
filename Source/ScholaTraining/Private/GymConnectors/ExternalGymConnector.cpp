@@ -15,7 +15,9 @@ FTrainingStateUpdate* UExternalGymConnector::ResolveEnvironmentStateUpdate()
 	{
 		PendingUpdateFuture = this->RequestStateUpdate();
 	}
-	if (PendingUpdateFuture.WaitFor(FTimespan::Zero()))
+
+	if (PendingUpdateFuture.WaitFor(FTimespan::Zero()) ||
+		PendingUpdateFuture.WaitFor(FTimespan::FromMilliseconds(0.5)))
 	{
 		FTrainingStateUpdate* Result = PendingUpdateFuture.Get();
 		PendingUpdateFuture = TFuture<FTrainingStateUpdate*>();
