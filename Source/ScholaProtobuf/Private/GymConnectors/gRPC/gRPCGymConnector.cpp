@@ -13,6 +13,26 @@ TFuture<FTrainingStateUpdate*> URPCGymConnector::RequestStateUpdate()
 	return this->DecisionRequestService->Receive<FTrainingStateUpdate>();
 }
 
+FTrainingStateUpdate* URPCGymConnector::ResolveEnvironmentStateUpdate()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("ScholaProtobuf: gRPCGymConnector Resolve Environment State Update");
+	if (!RawReceiveFuture.IsValid())
+	{
+		RawReceiveFuture = this->DecisionRequestService->Receive();
+	}
+
+	if (RawReceiveFuture.WaitFor(FTimespan::Zero()) ||
+		RawReceiveFuture.WaitFor(FTimespan::FromMilliseconds(0.5)))
+	{
+		const Schola::StateUpdate* RawRequest = RawReceiveFuture.Get();
+		FTrainingStateUpdate* Result = new FTrainingStateUpdate();
+		ProtobufDeserializer::FromProto(*RawRequest, *Result);
+		RawReceiveFuture = TFuture<const Schola::StateUpdate*>();
+		return Result;
+	}
+	return nullptr;
+}
+
 void URPCGymConnector::SubmitState(const FTrainingState& InTrainingState)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_STR("ScholaProtobuf: gRPCGymConnector Submit State");
@@ -70,6 +90,7 @@ void URPCGymConnector::Init(const FTrainingDefinition& AgentDefns)
 		UE_LOGFMT(LogScholaProtobuf, Verbose, "URPCGymConnector::Init(): Responding with Empty State Message after connector closed.");
 		//Cleanup any carry-over messages, if they still exist.
 		this->DecisionRequestService->Reset();
+		this->RawReceiveFuture = TFuture<const Schola::StateUpdate*>();
 		// Re-publish the training definition for the next connection
 		this->AgentDefinitionService->Publish(this->TrainingDefinition);
 	});

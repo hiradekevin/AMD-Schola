@@ -145,6 +145,65 @@ def _merge_step_results(
     )
 
 
+def _merge_step_results_flat(
+    segment_results: List[
+        Tuple[
+            List[Any],
+            List[float],
+            List[bool],
+            List[bool],
+            List[Dict[str, str]],
+            Dict[int, Dict[str, Any]],
+            Dict[int, Dict[str, str]],
+        ]
+    ],
+    segment_env_bases: List[int],
+) -> Tuple[
+    List[Any],
+    List[float],
+    List[bool],
+    List[bool],
+    List[Dict[str, str]],
+    Dict[int, Dict[str, Any]],
+    Dict[int, Dict[str, str]],
+]:
+    """
+    Merge per-segment flat results into global flat arrays.
+
+    Flat lists are concatenated in protocol order, which matches the global
+    IdManager flat ordering (segments are appended in the same order during
+    ``_merge_async_definitions``).
+    """
+    merged_obs: List[Any] = []
+    merged_rew: List[float] = []
+    merged_term: List[bool] = []
+    merged_trunc: List[bool] = []
+    merged_infos: List[Dict[str, str]] = []
+    merged_init_obs: Dict[int, Dict[str, Any]] = {}
+    merged_init_infos: Dict[int, Dict[str, str]] = {}
+    for i, res in enumerate(segment_results):
+        obs, rew, term, trunc, infos, init_o, init_i = res
+        merged_obs.extend(obs)
+        merged_rew.extend(rew)
+        merged_term.extend(term)
+        merged_trunc.extend(trunc)
+        merged_infos.extend(infos)
+        base = segment_env_bases[i]
+        for local_eid, agents in init_o.items():
+            merged_init_obs[base + local_eid] = agents
+        for local_eid, agents in init_i.items():
+            merged_init_infos[base + local_eid] = agents
+    return (
+        merged_obs,
+        merged_rew,
+        merged_term,
+        merged_trunc,
+        merged_infos,
+        merged_init_obs,
+        merged_init_infos,
+    )
+
+
 def is_iterable(obj: Any) -> bool:
     """
     Return whether ``iter(obj)`` succeeds.
@@ -212,6 +271,10 @@ class AsyncVecEnv(BaseVecEnv):
         self._segment_id_managers: List[IdManager] = []
         self._segment_flat_sizes: List[int] = []
         self._segment_env_bases: List[int] = []
+        # Flat (pre-deserialized) step path is used when every protocol supports it
+        self._use_flat = all(
+            hasattr(proto, "send_action_msg_flat") for proto in self.protocols
+        )
 
         def _run_loop() -> None:
             self._loop = asyncio.new_event_loop()
@@ -339,21 +402,34 @@ class AsyncVecEnv(BaseVecEnv):
     def step_async(self, actions: np.ndarray) -> None:
         off = 0
         coros = []
+        is_dict_space = isinstance(self.action_space, gym.spaces.Dict)
         for proto, seg_im in zip(self.protocols, self._segment_id_managers):
             n = seg_im.num_ids
             seg_actions = actions[off : off + n]
-            next_actions = seg_im.nest_list_to_dict_of_dicts(seg_actions)
-            if isinstance(self.action_space, gym.spaces.Dict):
-                for env_id, agent_id_list in enumerate(seg_im.ids):
-                    for agent_id in agent_id_list:
-                        next_actions[env_id][agent_id] = split_value(
-                            next_actions[env_id][agent_id], self.action_space
-                        )
-            coros.append(
-                proto.send_action_msg(
-                    next_actions, defaultdict(lambda: self.action_space)
+            if self._use_flat:
+                if is_dict_space:
+                    seg_actions = [
+                        split_value(seg_actions[i], self.action_space)
+                        for i in range(n)
+                    ]
+                coros.append(
+                    proto.send_action_msg_flat(
+                        seg_actions, self.action_space, seg_im
+                    )
                 )
-            )
+            else:
+                next_actions = seg_im.nest_list_to_dict_of_dicts(seg_actions)
+                if is_dict_space:
+                    for env_id, agent_id_list in enumerate(seg_im.ids):
+                        for agent_id in agent_id_list:
+                            next_actions[env_id][agent_id] = split_value(
+                                next_actions[env_id][agent_id], self.action_space
+                            )
+                coros.append(
+                    proto.send_action_msg(
+                        next_actions, defaultdict(lambda: self.action_space)
+                    )
+                )
             off += n
 
         async def _all_steps():
@@ -366,6 +442,29 @@ class AsyncVecEnv(BaseVecEnv):
     ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, List[Dict[str, str]]]:
         assert self._step_future is not None
         segment_results = self._step_future.result()
+        if self._use_flat:
+            merged = _merge_step_results_flat(
+                segment_results, self._segment_env_bases
+            )
+            (
+                observations,
+                rewards,
+                terminateds,
+                truncateds,
+                infos,
+                initial_obs,
+                initial_infos,
+            ) = merged
+            return self._process_step_wait_flat(
+                observations,
+                rewards,
+                terminateds,
+                truncateds,
+                infos,
+                initial_obs,
+                initial_infos,
+            )
+
         merged = _merge_step_results(segment_results, self._segment_env_bases)
         (
             observations,

@@ -49,6 +49,9 @@ private:
 	/** The service that will handle publishing agent definitions. */
 	IProducerBackend<Schola::TrainingDefinition>* AgentDefinitionService;
 
+	/** Raw (pre-deserialization) future from the exchange backend, for inline deserialization bypassing TFuture::Next(). */
+	TFuture<const Schola::StateUpdate*> RawReceiveFuture;
+
 	/** The communication manager that will handle the gRPC server. */
 	UPROPERTY()
 	TObjectPtr<UCommunicationManager> CommunicationManager;
@@ -92,6 +95,13 @@ public:
 	 * @note This function is asynchronous and will return immediately.
 	 */
 	TFuture<FTrainingStateUpdate*> RequestStateUpdate() override;
+
+	/**
+	 * @brief Resolve the environment state update via inline deserialization.
+	 * @return Pointer to the resolved training state update, or nullptr if not ready.
+	 * @details Uses raw Receive() and deserializes on the game thread to avoid thread pool latency from TFuture::Next().
+	 */
+	FTrainingStateUpdate* ResolveEnvironmentStateUpdate() override;
 
 
 	virtual void SubmitState(const FTrainingState& InTrainingState) override;

@@ -61,6 +61,26 @@ def dtype_to_proto(dtype: np.dtype) -> proto_dtype.DType:
     return NUMPY_DTYPE_TO_PROTO_DTYPE_MAPPING[dtype.type]
 
 
+_TO_PROTO_CACHE: dict = {}
+_FILL_GENERIC_CACHE: dict = {}
+
+
+def _get_to_proto_handler(space_type: type):
+    handler = _TO_PROTO_CACHE.get(space_type)
+    if handler is None:
+        handler = to_proto.dispatch(space_type)
+        _TO_PROTO_CACHE[space_type] = handler
+    return handler
+
+
+def _get_fill_generic_handler(msg_type: type):
+    handler = _FILL_GENERIC_CACHE.get(msg_type)
+    if handler is None:
+        handler = fill_generic.dispatch(msg_type)
+        _FILL_GENERIC_CACHE[msg_type] = handler
+    return handler
+
+
 @singledispatch
 def to_proto(msg):
     """
@@ -212,6 +232,35 @@ def _(space: spaces.Dict) -> proto_spaces.DictSpace:
 
 
 # fill a generic Point/Space message with the specific type
+
+
+def serialize_actions_direct(
+    actions_flat,
+    id_manager,
+    action_space,
+    state_update,
+):
+    """
+    Serialize flat actions directly into a pre-allocated StateUpdate, bypassing intermediate dicts.
+    """
+    state_update.Clear()
+    state_update.step  # Initialize the step oneof
+    state_update.status = updates.CommunicatorStatus.GOOD
+
+    space_type = type(action_space)
+    to_proto_fn = _get_to_proto_handler(space_type)
+    fill_fn = None
+
+    step = state_update.step
+    for flat_idx, (env_id, agent_id) in enumerate(id_manager.id_list):
+        if env_id >= len(step.environments):
+            step.environments.add()
+        env_update = step.environments[env_id]
+        action = actions_flat[flat_idx]
+        point_msg = to_proto_fn(action_space, action)
+        if fill_fn is None:
+            fill_fn = _get_fill_generic_handler(type(point_msg))
+        fill_fn(point_msg, env_update.updates[agent_id])
 
 
 @singledispatch

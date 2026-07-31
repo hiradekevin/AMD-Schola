@@ -6,8 +6,8 @@ Base class for connections that use the gRPC server.
 from typing import Any, Dict, List, Literal, Optional, Tuple
 import grpc
 from schola.core.protocols.base_protocol import AutoResetType, BaseRLProtocol
-from schola.core.protocols.protobuf.deserialize import from_proto
-from schola.core.protocols.protobuf.serialize import to_proto, fill_generic
+from schola.core.protocols.protobuf.deserialize import from_proto, _flatten_training_state
+from schola.core.protocols.protobuf.serialize import to_proto, fill_generic, serialize_actions_direct, _get_to_proto_handler, _get_fill_generic_handler
 import schola.generated.GymConnector_pb2_grpc as gym_grpc
 import schola.generated.GymConnector_pb2 as util_messages
 import schola.generated.Definitions_pb2 as env_definitions
@@ -48,6 +48,8 @@ class BaseGrpcProtocol(SocketProtocolMixin):
         self._gym_stub: Optional[gym_grpc.GymServiceStub] = None  # type: ignore
         self.environment_start_timeout = environment_start_timeout
         self.credential_mode = credential_mode
+        # Pre-allocated protobuf message for reuse across steps (avoids per-step allocation)
+        self._cached_state_update = state_updates.StateUpdate()
 
     @property
     def gym_stub(self) -> gym_grpc.GymServiceStub:
@@ -88,16 +90,30 @@ class BaseGrpcProtocol(SocketProtocolMixin):
     def prepare_action_msg(
         self, actions: Dict[int, Dict[str, Any]], action_space: Dict[str, gym.Space]
     ) -> state_updates.StateUpdate:
-        state_update = state_updates.StateUpdate(step=state_updates.Step())
+        state_update = self._cached_state_update
+        state_update.Clear()
+        state_update.step  # Initialize the step oneof
         state_update.status = state_updates.CommunicatorStatus.GOOD
 
+        step = state_update.step
+        to_proto_cached = None
+        fill_cached = None
+        sample_space = next(iter(action_space.values())) if action_space else None
+        if sample_space is not None:
+            sample_type = type(sample_space)
+            to_proto_cached = _get_to_proto_handler(sample_type)
+
         for env_id in actions:
-            env_update = state_update.step.environments.add()
+            env_update = step.environments.add()
+            env_updates = env_update.updates
             for agent_id, action in actions[env_id].items():
-                fill_generic(
-                    to_proto(action_space[agent_id], action),
-                    env_update.updates[agent_id],
-                )
+                if to_proto_cached is not None:
+                    point_msg = to_proto_cached(sample_space, action)
+                else:
+                    point_msg = to_proto(action_space[agent_id], action)
+                if fill_cached is None:
+                    fill_cached = _get_fill_generic_handler(type(point_msg))
+                fill_cached(point_msg, env_updates[agent_id])
         return state_update
 
     @property
@@ -235,14 +251,43 @@ class GrpcProtocol(BaseGrpcProtocol, BaseRLProtocol):
         self, actions: Dict[int, Dict[str, Any]], action_space: Dict[str, gym.Space]
     ):
         state_update = self.prepare_action_msg(actions, action_space)
+        response = self.gym_stub.UpdateState(state_update)
 
-        training_state: state.State = self.gym_stub.UpdateState(state_update)
         observations, rewards, terminateds, truncateds, infos = from_proto(
-            training_state.training_state
+            response.training_state
         )
 
-        if training_state.HasField("initial_state"):
-            initial_obs, initial_info = from_proto(training_state.initial_state)
+        if response.HasField("initial_state"):
+            initial_obs, initial_info = from_proto(response.initial_state)
+        else:
+            initial_obs, initial_info = {}, {}
+
+        return (
+            observations,
+            rewards,
+            terminateds,
+            truncateds,
+            infos,
+            initial_obs,
+            initial_info,
+        )
+
+    def send_action_msg_flat(
+        self, actions_flat, action_space, id_manager
+    ):
+        """
+        Send actions using a flat array (bypasses intermediate dict creation).
+        Returns data in the same format as send_action_msg.
+        """
+        serialize_actions_direct(actions_flat, id_manager, action_space, self._cached_state_update)
+        response = self.gym_stub.UpdateState(self._cached_state_update)
+
+        observations, rewards, terminateds, truncateds, infos = _flatten_training_state(
+            response.training_state, id_manager
+        )
+
+        if response.HasField("initial_state"):
+            initial_obs, initial_info = from_proto(response.initial_state)
         else:
             initial_obs, initial_info = {}, {}
 

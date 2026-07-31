@@ -17,7 +17,8 @@ import schola.generated.GymConnector_pb2_grpc as gym_grpc
 import schola.generated.State_pb2 as state
 import schola.generated.StateUpdates_pb2 as state_updates
 import logging
-from schola.core.protocols.protobuf.deserialize import from_proto
+from schola.core.protocols.protobuf.deserialize import from_proto, _flatten_training_state
+from schola.core.protocols.protobuf.serialize import serialize_actions_direct
 from schola.core.protocols.protobuf.grpc_protocol import BaseGrpcProtocol
 from schola.core.protocols.socket_protocol import SocketProtocolMixin
 
@@ -135,13 +136,42 @@ class AsyncGrpcProtocol(AsyncBaseRLProtocol, BaseGrpcProtocol):
     ):
         state_update = self.prepare_action_msg(actions, action_space)
 
-        training_state: state.State = await self.gym_stub.UpdateState(state_update)
+        response: state.State = await self.gym_stub.UpdateState(state_update)
         observations, rewards, terminateds, truncateds, infos = from_proto(
-            training_state.training_state  # type: ignore
+            response.training_state
         )
 
-        if training_state.HasField("initial_state"):
-            initial_obs, initial_info = from_proto(training_state.initial_state)  # type: ignore
+        if response.HasField("initial_state"):
+            initial_obs, initial_info = from_proto(response.initial_state)
+        else:
+            initial_obs, initial_info = {}, {}
+
+        return (
+            observations,
+            rewards,
+            terminateds,
+            truncateds,
+            infos,
+            initial_obs,
+            initial_info,
+        )
+
+    async def send_action_msg_flat(
+        self, actions_flat, action_space, id_manager
+    ):
+        """
+        Send actions using a flat array (bypasses intermediate dict creation).
+        Returns data in the same format as send_action_msg.
+        """
+        serialize_actions_direct(actions_flat, id_manager, action_space, self._cached_state_update)
+        response: state.State = await self.gym_stub.UpdateState(self._cached_state_update)
+
+        observations, rewards, terminateds, truncateds, infos = _flatten_training_state(
+            response.training_state, id_manager
+        )
+
+        if response.HasField("initial_state"):
+            initial_obs, initial_info = from_proto(response.initial_state)
         else:
             initial_obs, initial_info = {}, {}
 
