@@ -12,7 +12,7 @@ Pair with the patched train.py in this same folder.
 
 from __future__ import annotations
 
-from typing import Annotated, List, Optional, Type, Union, Any, Dict, Tuple
+from typing import Annotated, List, Optional, Type, Union, Any, Dict
 
 from schola.scripts.common.settings import (
     ActivationFunctionEnum,
@@ -295,9 +295,6 @@ class Sb3LoggingSettings(Sb3BaseLoggingSettings):
         int, Parameter(validator=validators.Number(gte=0, lte=2))
     ] = 0
     "Verbosity level for callbacks. This controls the level of detail in the output from any callbacks used during training."
-
-    info_log_keys: Optional[Tuple[str, ...]] = None
-    "Subset of environment info dict keys to log at episode boundaries (e.g. health, distance_to_goal). Info values from Unreal Engine are strings; numeric strings are converted to float for mean/min/max aggregation."
 
     def __post_init__(self):
         # create log_dir eagerly only if tensorboard or csv logging will be used

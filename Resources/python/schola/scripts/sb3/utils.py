@@ -5,7 +5,7 @@ Collection of custom callback classes for training NPCRL through Schola with sta
 
 import sys
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Union
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 import numpy as np
 
@@ -14,6 +14,12 @@ INTERVAL_AXIS = 1
 
 
 InfoValue = Union[float, str]
+
+# Keys injected by Schola's VecEnv / SB3 wrappers into the info dict, not custom
+# agent state from Unreal Engine. These are excluded from auto-captured info logs.
+EXCLUDED_INFO_KEYS = frozenset(
+    {"terminal_observation", "TimeLimit.truncated", "episode", "final_info", "final_obs"}
+)
 
 
 class SingleEnvRewardCallback(BaseCallback):
@@ -28,8 +34,6 @@ class SingleEnvRewardCallback(BaseCallback):
         The id of the environment to log rewards and steps for.
     frequency : int
         The frequency at which to log the rewards and steps taken.
-    info_keys : Optional[Tuple[str, ...]]
-        Subset of info dict keys from agent state to capture at episode end.
 
     Attributes
     ----------
@@ -42,7 +46,8 @@ class SingleEnvRewardCallback(BaseCallback):
     step_count : List[int]
         The number of steps taken in each episode.
     info_values : Dict[str, List[InfoValue]]
-        Captured info dict values per key, accumulated per episode end.
+        Captured info dict values per key, accumulated per episode end. Keys are
+        discovered dynamically from the agent state info dict.
     last_logging_interval : int
         The last interval that was logged.
     logging_interval_size : int
@@ -52,7 +57,7 @@ class SingleEnvRewardCallback(BaseCallback):
 
     """
 
-    def __init__(self, verbose=0, id=0, frequency=10, info_keys: Optional[Tuple[str, ...]] = None):
+    def __init__(self, verbose=0, id=0, frequency=10):
         super().__init__(verbose)
         self.episode_reward = 0
         self.episode_rewards = []
@@ -61,8 +66,7 @@ class SingleEnvRewardCallback(BaseCallback):
         self.last_logging_interval = 0
         self.logging_interval_size = frequency
         self.id = id
-        self.info_keys = info_keys or ()
-        self.info_values: Dict[str, List[InfoValue]] = {k: [] for k in self.info_keys}
+        self.info_values: Dict[str, List[InfoValue]] = {}
 
     @property
     def ready_to_log(self) -> bool:
@@ -84,14 +88,16 @@ class SingleEnvRewardCallback(BaseCallback):
         if self.locals["dones"][self.id]:
             self.episode_rewards.append(self.episode_reward)
             self.step_count.append(self.episode_steps)
-            # Capture custom info from agent state at episode end
-            for key in self.info_keys:
-                raw = self.locals["infos"][self.id].get(key)
-                if raw is not None:
-                    try:
-                        self.info_values[key].append(float(raw))
-                    except (ValueError, TypeError):
-                        self.info_values[key].append(str(raw))
+            # Capture all custom info from agent state at episode end
+            for key, raw in self.locals["infos"][self.id].items():
+                if key in EXCLUDED_INFO_KEYS:
+                    continue
+                if key not in self.info_values:
+                    self.info_values[key] = []
+                try:
+                    self.info_values[key].append(float(raw))
+                except (ValueError, TypeError):
+                    self.info_values[key].append(str(raw))
             self.episode_steps = 0
             self.episode_reward = 0
 
@@ -125,7 +131,7 @@ class SingleEnvRewardCallback(BaseCallback):
 
     def get_info_interval(self) -> Dict[str, List[InfoValue]]:
         """
-        Returns the info values for the last logging interval for each tracked key.
+        Returns the info values for the last logging interval for each captured key.
 
         Returns
         -------
@@ -155,8 +161,6 @@ class RewardCallback(CallbackList):
         The frequency at which to log the rewards and steps taken.
     num_envs : int, default=1
         The number of environments to log rewards and steps for.
-    info_keys : Optional[Tuple[str, ...]]
-        Subset of info dict keys from agent state to log at episode boundaries.
 
     Attributes
     ----------
@@ -170,19 +174,15 @@ class RewardCallback(CallbackList):
         The current logging interval.
     start_time : int
         The time at which the callback was created.
-    info_keys : Tuple[str, ...]
-        The info keys being tracked.
     """
 
-    def __init__(self, verbose: int = 0, frequency: int = 10, num_envs: int = 1,
-                 info_keys: Optional[Tuple[str, ...]] = None):
+    def __init__(self, verbose: int = 0, frequency: int = 10, num_envs: int = 1):
         # don't do the CallbackList init since it's 1 line, could clone CallbackList at a later date
         BaseCallback.__init__(self, verbose)
 
         self.num_envs = num_envs
-        self.info_keys = info_keys or ()
         self.callbacks = [
-            SingleEnvRewardCallback(verbose, i, frequency, self.info_keys) for i in range(self.num_envs)
+            SingleEnvRewardCallback(verbose, i, frequency) for i in range(self.num_envs)
         ]
 
         self.summarize_every = frequency
@@ -243,23 +243,25 @@ class RewardCallback(CallbackList):
 
             self.logger.record("time/elapsed_time", time_elapsed)
 
-            # Log custom info keys from agent state
-            if self.info_keys:
-                info_intervals = [cb.get_info_interval() for cb in self.callbacks]
-                for key in self.info_keys:
-                    # Flatten captured values across all envs for this key
-                    flat: List[InfoValue] = []
-                    for env_info in info_intervals:
-                        flat.extend(env_info.get(key, []))
-                    if not flat:
-                        continue
-                    numeric = [v for v in flat if isinstance(v, (int, float))]
-                    if numeric:
-                        self.logger.record(f"info/{key}_mean", np.mean(numeric))
-                        self.logger.record(f"info/{key}_min", np.min(numeric))
-                        self.logger.record(f"info/{key}_max", np.max(numeric))
-                    else:
-                        self.logger.record(f"info/{key}_last", flat[-1])
+            # Log all custom info keys captured from agent state
+            info_intervals = [cb.get_info_interval() for cb in self.callbacks]
+            all_keys = set()
+            for env_info in info_intervals:
+                all_keys.update(env_info.keys())
+            for key in sorted(all_keys):
+                # Flatten captured values across all envs for this key
+                flat: List[InfoValue] = []
+                for env_info in info_intervals:
+                    flat.extend(env_info.get(key, []))
+                if not flat:
+                    continue
+                numeric = [v for v in flat if isinstance(v, (int, float))]
+                if numeric:
+                    self.logger.record(f"info/{key}_mean", np.mean(numeric))
+                    self.logger.record(f"info/{key}_min", np.min(numeric))
+                    self.logger.record(f"info/{key}_max", np.max(numeric))
+                else:
+                    self.logger.record(f"info/{key}_last", flat[-1])
 
             for callback in self.callbacks:
                 callback.increment_logging_interval()

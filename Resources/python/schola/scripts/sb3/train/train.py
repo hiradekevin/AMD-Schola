@@ -395,7 +395,6 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
                     verbose=args.logging_settings.callback_verbosity,
                     frequency=args.logging_settings.log_freq,
                     num_envs=env.num_envs,
-                    info_keys=args.logging_settings.info_log_keys,
                 )
                 callbacks.append(reward_callback)
 

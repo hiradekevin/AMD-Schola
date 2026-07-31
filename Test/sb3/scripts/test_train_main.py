@@ -7,7 +7,6 @@ import builtins
 import logging
 from dataclasses import replace
 from pathlib import Path
-from typing import Tuple
 from unittest.mock import MagicMock, patch
 
 import gymnasium as gym
@@ -57,7 +56,6 @@ def _train_args(
     disable_eval: bool = True,
     enable_tensorboard: bool = False,
     enable_csv_logging: bool = False,
-    info_log_keys: Tuple[str, ...] | None = None,
     enable_checkpoints: bool = False,
     save_final_policy: bool = False,
     export_onnx: bool = False,
@@ -90,7 +88,6 @@ def _train_args(
         enable_tensorboard=enable_tensorboard,
         enable_csv_logging=enable_csv_logging,
         log_dir=log_dir,
-        info_log_keys=info_log_keys,
     )
 
     return Sb3TrainScriptSettings(
@@ -329,8 +326,8 @@ def test_main_enable_csv_logging_includes_reward_callback(mock_ppo, mock_vec_cls
 
 @patch("schola.sb3.env.VecEnv")
 @patch("stable_baselines3.PPO")
-def test_main_csv_logging_with_info_keys_passes_them_to_callback(mock_ppo, mock_vec_cls, tmp_path):
-    """Info keys from settings are forwarded to RewardCallback."""
+def test_main_csv_logging_auto_captures_all_info_keys(mock_ppo, mock_vec_cls, tmp_path):
+    """All custom info keys from agent state are captured without explicit config."""
     mock_env = MagicMock()
     mock_env.num_envs = 1
     mock_env.observation_space = gym.spaces.Box(-1.0, 1.0, (4,), dtype=np.float32)
@@ -341,15 +338,79 @@ def test_main_csv_logging_with_info_keys_passes_them_to_callback(mock_ppo, mock_
     mock_ppo.load.side_effect = Exception("x")
     mock_ppo.return_value = mock_model
 
-    info_keys = ("health", "distance_to_goal")
-    args = _train_args(tmp_path, timesteps=2, enable_csv_logging=True, info_log_keys=info_keys)
+    args = _train_args(tmp_path, timesteps=2, enable_csv_logging=True)
     main(args)
 
     kwargs = mock_model.learn.call_args.kwargs
     cbs = kwargs.get("callback") or []
     reward_cb = next((c for c in cbs if isinstance(c, RewardCallback)), None)
     assert reward_cb is not None
-    assert reward_cb.info_keys == info_keys
+    # Callbacks auto-track all keys; no key list was provided
+    assert reward_cb.callbacks[0].info_values == {}
+
+
+def test_single_env_reward_callback_captures_all_info_keys():
+    """SingleEnvRewardCallback auto-captures all custom info, excluding SB3-internal keys."""
+    from schola.scripts.sb3.utils import SingleEnvRewardCallback
+
+    cb = SingleEnvRewardCallback(verbose=0, id=0, frequency=10)
+    cb.init_callback(MagicMock())
+
+    def _step(reward: float, done: bool, info: dict):
+        cb.locals = {
+            "rewards": np.array([reward], dtype=np.float32),
+            "dones": np.array([done]),
+            "infos": [info],
+        }
+        cb.on_step()
+
+    # Episode 1: numeric and string info, plus internal keys that must be skipped
+    _step(1.0, False, {})
+    _step(2.0, True, {
+        "health": "75.5",
+        "position": "[1.0, 2.0]",
+        "termination_reason": "eliminated",
+        "terminal_observation": np.zeros((4,), dtype=np.float32),
+        "TimeLimit.truncated": True,
+    })
+    # Episode 2
+    _step(0.5, True, {"health": "90", "position": "[3.0, 4.0]"})
+
+    assert cb.info_values["health"] == [75.5, 90.0]
+    assert cb.info_values["position"] == ["[1.0, 2.0]", "[3.0, 4.0]"]
+    assert cb.info_values["termination_reason"] == ["eliminated"]
+    # SB3/Schola-internal keys must not be captured
+    assert "terminal_observation" not in cb.info_values
+    assert "TimeLimit.truncated" not in cb.info_values
+
+
+def test_single_env_reward_callback_aligns_info_with_episodes():
+    """Info values align 1:1 with episodes, and get_info_interval slices correctly."""
+    from schola.scripts.sb3.utils import SingleEnvRewardCallback
+
+    cb = SingleEnvRewardCallback(verbose=0, id=0, frequency=10)
+    cb.init_callback(MagicMock())
+
+    def _step(reward: float, done: bool, health: str):
+        cb.locals = {
+            "rewards": np.array([reward], dtype=np.float32),
+            "dones": np.array([done]),
+            "infos": [{"health": health}],
+        }
+        cb.on_step()
+
+    _step(1.0, False, "10")  # not an episode end
+    for health in ("20", "30", "40", "50", "60", "70", "80", "90", "100", "110"):
+        _step(1.0, True, health)
+
+    assert len(cb.episode_rewards) == 10
+    assert cb.ready_to_log
+    interval = cb.get_info_interval()
+    assert interval["health"] == [20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 110.0]
+
+    cb.increment_logging_interval()
+    _step(1.0, True, "120")
+    assert cb.get_info_interval()["health"] == [120.0]
 
 
 @patch("schola.sb3.env.VecEnv")

@@ -298,28 +298,6 @@ def test_ppo_logging_args(mock_app, mock_main):
     assert args.logging_settings.sb3_verbosity == 2
 
 
-def test_ppo_info_log_keys(mock_app, mock_main):
-    """Test that info-log-keys argument is correctly parsed."""
-
-    command, bound, _ = mock_app.parse_args(
-        [
-            "ppo",
-            "--enable-csv-logging",
-            "--info-log-keys",
-            "health",
-            "distance_to_goal",
-        ],
-        exit_on_error=False,
-    )
-
-    command(*bound.args, **bound.kwargs)
-
-    args = mock_main.call_args[0][0]
-
-    assert args.logging_settings.enable_csv_logging == True
-    assert args.logging_settings.info_log_keys == ("health", "distance_to_goal")
-
-
 def test_ppo_checkpoint_args(mock_app, mock_main):
     """Test that checkpoint arguments are correctly parsed."""
     command, bound, _ = mock_app.parse_args(
