@@ -282,11 +282,14 @@ class Sb3LoggingSettings(Sb3BaseLoggingSettings):
     enable_tensorboard: bool = False
     "Whether to enable TensorBoard logging."
 
+    enable_csv_logging: bool = False
+    "Whether to save training metrics to a CSV file in log_dir."
+
     log_dir: types.Directory = Path("./logs")
-    "Directory to save TensorBoard logs. (Will be created if it doesn't exist when tensorboard is enabled.)"
+    "Directory to save log files (TensorBoard events, CSV). (Will be created if it doesn't exist when tensorboard or csv logging is enabled.)"
 
     log_freq: Annotated[int, Parameter(validator=validators.Number(gte=0))] = 10
-    "Frequency of logging training metrics to TensorBoard. This determines how often (in terms of training steps) the training metrics will be logged to TensorBoard. A value of 10 means that every 10 training steps, the metrics will be recorded."
+    "Frequency of logging training metrics. This determines how often (in terms of training steps) the training metrics will be recorded. A value of 10 means that every 10 training steps, the metrics will be recorded."
 
     callback_verbosity: Annotated[
         int, Parameter(validator=validators.Number(gte=0, lte=2))
@@ -294,13 +297,13 @@ class Sb3LoggingSettings(Sb3BaseLoggingSettings):
     "Verbosity level for callbacks. This controls the level of detail in the output from any callbacks used during training."
 
     def __post_init__(self):
-        # create log_dir eagerly only if tensorboard will be used
-        if self.enable_tensorboard and self.log_dir.exists() is False:
+        # create log_dir eagerly only if tensorboard or csv logging will be used
+        if (self.enable_tensorboard or self.enable_csv_logging) and not self.log_dir.exists():
             try:
                 self.log_dir.mkdir(parents=True, exist_ok=True)
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed to create TensorBoard log directory '{self.log_dir}': {e}"
+                    f"Failed to create log directory '{self.log_dir}': {e}"
                 ) from e
 
 

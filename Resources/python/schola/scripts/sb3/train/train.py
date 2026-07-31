@@ -14,6 +14,7 @@ from dataclasses import asdict
 import os
 import logging
 import signal
+import sys
 from typing import (
     Any,
     Dict,
@@ -172,6 +173,7 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
     # initialize so we can force closure at the end
     env = None
     model: Optional[BaseAlgorithm] = None
+    sb3_logger = None
     try:
         # This context manager redirects GRPC errors into custom error types to help debug
         with ScholaErrorContextManager() as err_ctxt:
@@ -378,10 +380,31 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
                 args.algorithm_settings.name,
                 args.resume_settings.reset_timestep,
             )
+
+            # SB3's HumanOutputFormat truncates keys to 36 chars by default, which
+            # makes long custom info keys (e.g. info/actuation_delta_distance_squared_sum_mean)
+            # collide with their _min/_max variants and crash with a ValueError at dump.
+            # Widen the truncation limit for stdout to keep all auto-captured keys distinct.
+            from stable_baselines3.common.logger import HumanOutputFormat
+            sb3_logger.output_formats = [
+                HumanOutputFormat(sys.stdout, max_length=128)
+                if isinstance(fmt, HumanOutputFormat) and fmt.file is sys.stdout
+                else fmt
+                for fmt in sb3_logger.output_formats
+            ]
+
+            # Append CSV output when file logging is enabled (independent of tensorboard)
+            if args.logging_settings.enable_csv_logging:
+                from stable_baselines3.common.logger import CSVOutputFormat
+                # Ensure directory exists (__post_init__ may not have run with CLI-set values)
+                args.logging_settings.log_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = args.logging_settings.log_dir / f"{args.algorithm_settings.name.lower()}.csv"
+                sb3_logger.output_formats.append(CSVOutputFormat(str(csv_path)))
+
             sb3_logger.output_formats += output_formats
             model.set_logger(sb3_logger)
 
-            if args.logging_settings.enable_tensorboard:
+            if args.logging_settings.enable_tensorboard or args.logging_settings.enable_csv_logging:
                 reward_callback = RewardCallback(
                     verbose=args.logging_settings.callback_verbosity,
                     frequency=args.logging_settings.log_freq,
@@ -474,6 +497,10 @@ def main(args: Sb3TrainScriptSettings) -> Optional[Tuple[float, float]]:
         if env is not None:
             env.close()
         raise
+    finally:
+        # Flush and release CSV/TensorBoard output files (also on Ctrl-C / errors)
+        if sb3_logger is not None:
+            sb3_logger.close()
 
 
 app = App(name="train", help="Train a model using StableBaselines3")

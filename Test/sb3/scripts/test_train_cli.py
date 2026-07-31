@@ -269,6 +269,7 @@ def test_ppo_logging_args(mock_app, mock_main):
         [
             "ppo",
             "--enable-tensorboard",
+            "--enable-csv-logging",
             "--log-dir",
             "./test_logs",
             "--log-freq",
@@ -289,6 +290,7 @@ def test_ppo_logging_args(mock_app, mock_main):
 
     # Verify logging settings
     assert args.logging_settings.enable_tensorboard == True
+    assert args.logging_settings.enable_csv_logging == True
     assert str(args.logging_settings.log_dir) == "test_logs"
     assert args.logging_settings.log_freq == 100
     assert args.logging_settings.callback_verbosity == 2
