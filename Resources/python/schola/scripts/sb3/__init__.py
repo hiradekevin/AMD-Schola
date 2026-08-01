@@ -12,10 +12,14 @@ from .eval.eval import app as eval_app
 
 from .sb3_to_onnx import export_onnx_app
 
+from .run.run import run_app
+
 sb3_app.command(train_app.meta, name="train")
 sb3_app.command(eval_app.meta, name="eval")
 
 sb3_app.command(export_onnx_app, name="export")
+
+sb3_app.command(run_app.meta, name="run")
 
 if __name__ == "__main__":
     sb3_app()
