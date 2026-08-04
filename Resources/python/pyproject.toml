@@ -64,10 +64,12 @@ Repository = "https://github.com/GPUOpen-LibrariesAndSDKs/Schola"
 # Dependencies for running training with Stable Baselines 3.
 # * stable-baselines3 is required to run training with Stable Baselines 3.
 # * tqdm and rich are required to display the training progress bar from Stable Baselines 3.
+# * onnxruntime is required to run ONNX inference with `schola sb3 run`.
 sb3 = [
     "stable-baselines3>=2.6",
     "tqdm",
     "rich",
+    "onnxruntime",
 ]
 
 # Dependencies for running training with RLlib.
@@ -90,6 +92,7 @@ all = [
     "rich",
     "ray[rllib]>=2.49, <2.55",
     "minari[hdf5,create]>=0.5.2",
+    "onnxruntime",
 ]
 
 [project.scripts]
